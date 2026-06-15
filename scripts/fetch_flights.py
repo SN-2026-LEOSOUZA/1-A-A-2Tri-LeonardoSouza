@@ -41,10 +41,12 @@ airports_env = os.environ.get("AIRPORTS", "SBCA")
 AIRPORTS     = [a.strip().upper() for a in airports_env.split(",") if a.strip()]
 LOTE         = 500   # registros por requisição ao Supabase
 
-BRT      = timezone(timedelta(hours=-3))
-hoje     = datetime.now(BRT)
-data_ref = hoje.strftime("%d%m%Y")
-data_iso = hoje.strftime("%Y-%m-%d")
+BRT   = timezone(timedelta(hours=-3))
+hoje  = datetime.now(BRT)
+ontem = hoje - timedelta(days=1)
+
+data_ref = ontem.strftime("%d%m%Y")
+data_iso = ontem.strftime("%Y-%m-%d")
 
 print(f"Data de referência: {hoje.strftime('%d/%m/%Y')} (BRT)")
 print(f"Aeroportos configurados: {', '.join(AIRPORTS)}")
