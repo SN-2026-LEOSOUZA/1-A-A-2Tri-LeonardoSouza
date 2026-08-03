@@ -145,8 +145,8 @@
 
   <!-- ⚠️ CONFIGURAÇÃO — Substitua pelos valores do seu projeto Supabase -->
   <script>
-    const SUPABASE_URL = "https://XXXXXXXXXXXX.supabase.co"; 
-    const SUPABASE_ANON_KEY ="eyJ...SUA_PUBLISHABLE_KEY_AQUI...";
+    const SUPABASE_URL      = "https://kgowmjkfmgvvfdsenyiw.supabase.co";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtnb3dtamtmbWd2dmZkc2VueWl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4ODcyMDQsImV4cCI6MjA5NjQ2MzIwNH0.DM46P7AIMDcOKmmu8ekDj3JkEu_MjIVejUhWtl3yX_U";
     const PER_PAGE          = 50;
   </script>
 
@@ -441,8 +441,15 @@
     /* ── Selects cascata ─────────────────────────────────────────────── */
     async function loadAirports() {
       try {
-        const r = await fetch('data/airports.json');
-        airports = await r.json();
+        // Busca aeroportos do Supabase (não existe mais data/airports.json)
+        const rows = await sbFetch('aeroportos?select=icao,iata,nome,cidade,estado&order=estado.asc,cidade.asc');
+        airports = rows.map(a => ({
+          icao:  a.icao,
+          iata:  a.iata,
+          name:  a.nome,
+          city:  a.cidade,
+          state: a.estado,
+        }));
         const states = [...new Set(airports.map(a => a.state))].sort();
         const sel = document.getElementById('sel-state');
         sel.innerHTML = '<option value="">Todos os estados</option>';
