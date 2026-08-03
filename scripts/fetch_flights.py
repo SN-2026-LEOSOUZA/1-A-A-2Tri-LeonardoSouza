@@ -1,8 +1,9 @@
+
 """
 fetch_flights.py — SIROS/ANAC + Supabase v2
 Melhorias aplicadas:
   - Logs renomeados: "enviados/processados" em vez de "inseridos/atualizados"
-  - Upsert explicado: evita duplicatas via constraint voos_unique
+  - Upsert explained: evita duplicatas via constraint voos_unique
   - execucoes registra: voos_processados, lotes_enviados, erros
   - Falha parcial gera status "erro_parcial" e falha o workflow (exit 1)
   - Falha crítica gera status "erro_critico"
@@ -28,7 +29,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     print("[ERRO CRÍTICO] SUPABASE_URL e SUPABASE_SERVICE_KEY são obrigatórios.")
-    print("              Configure-os como GitHub Secrets no repositório.")
+    print("               Configure-os como GitHub Secrets no repositório.")
     sys.exit(1)
 
 db = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -41,12 +42,10 @@ airports_env = os.environ.get("AIRPORTS", "SBCA")
 AIRPORTS     = [a.strip().upper() for a in airports_env.split(",") if a.strip()]
 LOTE         = 500   # registros por requisição ao Supabase
 
-BRT   = timezone(timedelta(hours=-3))
-hoje  = datetime.now(BRT)
-ontem = hoje - timedelta(days=1)
-
-data_ref = ontem.strftime("%d%m%Y")
-data_iso = ontem.strftime("%Y-%m-%d")
+BRT      = timezone(timedelta(hours=-3))
+hoje     = datetime.now(BRT)
+data_ref = hoje.strftime("%d%m%Y")
+data_iso = hoje.strftime("%Y-%m-%d")
 
 print(f"Data de referência: {hoje.strftime('%d/%m/%Y')} (BRT)")
 print(f"Aeroportos configurados: {', '.join(AIRPORTS)}")
@@ -213,6 +212,7 @@ print(
     "(data_referencia + icao_empresa + numero_voo + icao_origem + icao_destino + etapa). "
     "Voos já existentes são atualizados — sem duplicatas."
 )
+
 # Remove duplicatas internas antes do envio
 # (a API SIROS pode retornar o mesmo voo mais de uma vez)
 def deduplicar(lista: list) -> list:
@@ -238,11 +238,9 @@ removidos = antes - len(registros)
 if removidos:
     print(f"  Deduplicação: {removidos} registro(s) duplicado(s) removido(s) antes do envio")
 
-
-# Envio em lotes ao Supabase
 total_processados = 0
-total_lotes       = 0
-total_erros       = 0
+total_lotes = 0
+total_erros = 0
 
 for i in range(0, len(registros), LOTE):
     lote     = registros[i:i + LOTE]
@@ -283,3 +281,4 @@ print(f"\nConcluído — {total_processados} registros enviados/processados em {
 if total_erros > 0:
     print(f"\n[ATENÇÃO] {total_erros} lote(s) com erro — workflow finalizado com falha.")
     sys.exit(1)
+
