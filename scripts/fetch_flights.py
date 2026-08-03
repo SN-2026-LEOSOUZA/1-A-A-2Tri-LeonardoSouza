@@ -2,7 +2,7 @@
 fetch_flights.py — SIROS/ANAC + Supabase v2
 Melhorias aplicadas:
   - Logs renomeados: "enviados/processados" em vez de "inseridos/atualizados"
-  - Upsert explained: evita duplicatas via constraint voos_unique
+  - Upsert explicado: evita duplicatas via constraint voos_unique
   - execucoes registra: voos_processados, lotes_enviados, erros
   - Falha parcial gera status "erro_parcial" e falha o workflow (exit 1)
   - Falha crítica gera status "erro_critico"
@@ -28,7 +28,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     print("[ERRO CRÍTICO] SUPABASE_URL e SUPABASE_SERVICE_KEY são obrigatórios.")
-    print("               Configure-os como GitHub Secrets no repositório.")
+    print("              Configure-os como GitHub Secrets no repositório.")
     sys.exit(1)
 
 db = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -212,34 +212,10 @@ print(
     "Voos já existentes são atualizados — sem duplicatas."
 )
 
-# Remove duplicatas internas antes do envio
-# (a API SIROS pode retornar o mesmo voo mais de uma vez)
-def deduplicar(lista: list) -> list:
-    seen = set()
-    result = []
-    for r in lista:
-        key = (
-            r.get("data_referencia"),
-            r.get("icao_empresa"),
-            r.get("numero_voo"),
-            r.get("icao_origem"),
-            r.get("icao_destino"),
-            r.get("etapa"),
-        )
-        if key not in seen:
-            seen.add(key)
-            result.append(r)
-    return result
-
-antes = len(registros)
-registros = deduplicar(registros)
-removidos = antes - len(registros)
-if removidos:
-    print(f"  Deduplicação: {removidos} registro(s) duplicado(s) removido(s) antes do envio")
-
+# Envio em lotes ao Supabase
 total_processados = 0
-total_lotes = 0
-total_erros = 0
+total_lotes       = 0
+total_erros       = 0
 
 for i in range(0, len(registros), LOTE):
     lote     = registros[i:i + LOTE]
@@ -280,4 +256,3 @@ print(f"\nConcluído — {total_processados} registros enviados/processados em {
 if total_erros > 0:
     print(f"\n[ATENÇÃO] {total_erros} lote(s) com erro — workflow finalizado com falha.")
     sys.exit(1)
-
