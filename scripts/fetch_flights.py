@@ -1,4 +1,3 @@
-
 """
 fetch_flights.py — SIROS/ANAC + Supabase v2
 Melhorias aplicadas:
