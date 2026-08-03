@@ -6,9 +6,9 @@
 echo "Iniciando build..."
 
 # Substitui o placeholder da URL pelo valor real da variável de ambiente
-sed -i "s|https://kgowmjkfmgvvfdsenyiw.supabase.co|$SUPABASE_URL|g" index.html
+sed -i "s|https://XXXXXXXXXXXX.supabase.co|$SUPABASE_URL|g" index.html
 
 # Substitui o placeholder da chave pela anon key real
-sed -i "s|sb_publishable_IWKgJK9j6nUPRsbR0ywrxQ_w6bXJy5a|$SUPABASE_ANON_KEY|g" index.html
+sed -i "s|eyJ...SUA_PUBLISHABLE_KEY_AQUI...|$SUPABASE_ANON_KEY|g" index.html
 
 echo "Build concluído — variáveis injetadas com sucesso."
