@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
+  /*Página de teste*/
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -58,6 +59,11 @@
     input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(.6); }
     .btn { background: transparent; color: var(--accent); border-color: var(--accent);
            align-self: flex-end; white-space: nowrap; transition: background .15s; }
+
+
+
+
+    
     .btn:hover { background: rgba(56,189,248,.1); }
     .btn:disabled { opacity: .4; cursor: default; }
     .divider { width: 1px; height: 36px; background: var(--border); align-self: flex-end; }
@@ -144,15 +150,15 @@
 <body>
 
   <!-- ⚠️ CONFIGURAÇÃO — Substitua pelos valores do seu projeto Supabase -->
-  <script>
-    const SUPABASE_URL      = "https://kgowmjkfmgvvfdsenyiw.supabase.co";
-    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtnb3dtamtmbWd2dmZkc2VueWl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4ODcyMDQsImV4cCI6MjA5NjQ2MzIwNH0.DM46P7AIMDcOKmmu8ekDj3JkEu_MjIVejUhWtl3yX_U";
-    const PER_PAGE          = 50;
-  </script>
+<script>
+  const SUPABASE_URL = "https://kgowmjkfmgvvfdsenyiw.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtnb3dtamtmbWd2dmZkc2VueWl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4ODcyMDQsImV4cCI6MjA5NjQ2MzIwNH0.DM46P7AIMDcOKmmu8ekDj3JkEu_MjIVejUhWtl3yX_U";
+  const PER_PAGE = 50;
+</script>
 
   <header>
     <div class="header-left">
-      <h1 id="airport-name">Painel de Voos — SN-2026</h1>
+      <h1 id="airport-name">Painel de Voos — SN-2026-Update-15-06</h1>
       <p id="airport-subtitle">Selecione um aeroporto abaixo</p>
     </div>
     <div class="header-right">
@@ -441,15 +447,8 @@
     /* ── Selects cascata ─────────────────────────────────────────────── */
     async function loadAirports() {
       try {
-        // Busca aeroportos do Supabase (não existe mais data/airports.json)
-        const rows = await sbFetch('aeroportos?select=icao,iata,nome,cidade,estado&order=estado.asc,cidade.asc');
-        airports = rows.map(a => ({
-          icao:  a.icao,
-          iata:  a.iata,
-          name:  a.nome,
-          city:  a.cidade,
-          state: a.estado,
-        }));
+        const r = await fetch('data/airports.json');
+        airports = await r.json();
         const states = [...new Set(airports.map(a => a.state))].sort();
         const sel = document.getElementById('sel-state');
         sel.innerHTML = '<option value="">Todos os estados</option>';
