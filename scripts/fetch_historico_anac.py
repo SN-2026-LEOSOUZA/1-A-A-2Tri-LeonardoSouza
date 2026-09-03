@@ -1,19 +1,23 @@
 """
-fetch_historico_anac.py — Dados históricos ANAC/VRA + Supabase v1.3
-Correções baseadas no formato real do arquivo VRA (maio/2026):
-  - Separador: TAB (\t)
-  - Linha 1: metadado "Atualizado em: YYYY-MM-DD" — ignorada
-  - Linha 2: cabeçalho real com nomes das colunas
-  - Coluna de voo: "Número Voo" (sem "do")
-  - Data prevista: "2026-05-29 01:00:00.100000000" (ISO com nanossegundos)
-  - Data real:     "29/05/2026 00:50" (DD/MM/YYYY HH:MM)
-  - Valor nulo:    string "null" tratada como None
+fetch_historico_anac.py — Dados históricos ANAC/VRA + Supabase (v2 - URL corrigida)
+Busca o arquivo VRA (Voo Regular Ativo) do portal de dados abertos da ANAC,
+processa e insere na tabela historico_vra do Supabase.
+
+Execução: mensal (1º dia de cada mês via GitHub Actions)
+
+CORREÇÃO (2026-08): a ANAC descontinuou a publicação estática de arquivos
+no formato antigo (.../VRA/{ano}/{ano}{mes}.csv) em outubro de 2024.
+A nova estrutura de pastas é:
+  Voos e operações aéreas/Voo Regular Ativo (VRA)/{ano}/{MM} - {NomeMês}/VRA_{ano}{mes_sem_zero}.csv
+
+Exemplo confirmado manualmente:
+  .../Voo Regular Ativo (VRA)/2026/07 - Julho/VRA_20267.csv
 
 Variáveis de ambiente:
   SUPABASE_URL         → URL do projeto (GitHub Secret)
   SUPABASE_SERVICE_KEY → secret key / service_role key (GitHub Secret)
   AIRPORTS             → ICAOs para filtrar (GitHub Variable)
-  ANO_MES              → Período no formato YYYY-MM (ex: 2026-05)
+  ANO_MES              → Período a buscar no formato AAAA-MM
                          Padrão: mês anterior ao atual
 """
 
@@ -22,7 +26,6 @@ import io
 import os
 import sys
 from datetime import datetime, timezone, timedelta
-from urllib.parse import quote
 
 import requests
 from supabase import create_client
@@ -45,11 +48,13 @@ airports_env = os.environ.get("AIRPORTS", "SBCA")
 AIRPORTS     = [a.strip().upper() for a in airports_env.split(",") if a.strip()]
 LOTE         = 500
 
+# Período: usa mês anterior por padrão (o VRA do mês atual só fica disponível
+# depois do fechamento do mês)
 BRT  = timezone(timedelta(hours=-3))
 hoje = datetime.now(BRT)
 
 if os.environ.get("ANO_MES"):
-    ano_mes = os.environ["ANO_MES"].strip()
+    ano_mes = os.environ["ANO_MES"].strip()  # ex: 2026-07
 else:
     primeiro_do_mes = hoje.replace(day=1)
     mes_anterior    = primeiro_do_mes - timedelta(days=1)
@@ -61,251 +66,224 @@ mes_int  = int(mes)
 print(f"Período histórico: {ano_mes}")
 print(f"Aeroportos filtrados: {', '.join(AIRPORTS)}")
 
-# ── URL do VRA ────────────────────────────────────────────────────────────────
+# ── URL do VRA (estrutura nova, confirmada em 2026-08) ────────────────────────
 
 MESES_PT = {
-    1: "Janeiro",  2: "Fevereiro", 3: "Março",    4: "Abril",
-    5: "Maio",     6: "Junho",     7: "Julho",     8: "Agosto",
-    9: "Setembro", 10: "Outubro",  11: "Novembro", 12: "Dezembro",
+    1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril",
+    5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto",
+    9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro",
 }
 
-mes_nome  = MESES_PT[mes_int]
-mes_pasta = f"{mes_int:02d} - {mes_nome}"   # ex: "05 - Maio"
-arquivo   = f"VRA_{ano}{mes_int}.csv"        # ex: "VRA_20265.csv"
+nome_mes = MESES_PT[mes_int]
 
-BASE_ANAC = "https://sistemas.anac.gov.br/dadosabertos/"
-CAMINHO   = f"Voos e operações aéreas/Voo Regular Ativo (VRA)/{ano}/{mes_pasta}/{arquivo}"
-VRA_URL   = BASE_ANAC + quote(CAMINHO, safe="/")
+# Pasta usa mês COM zero à esquerda (ex: "07 - Julho")
+# Nome do arquivo usa mês SEM zero à esquerda (ex: "VRA_20267.csv" para 2026-07)
+BASE_PATH = (
+    "https://sistemas.anac.gov.br/dadosabertos/"
+    "Voos%20e%20opera%C3%A7%C3%B5es%20a%C3%A9reas/"
+    "Voo%20Regular%20Ativo%20%28VRA%29/"
+    f"{ano}/{mes_int:02d}%20-%20{nome_mes}/"
+)
+VRA_URL = f"{BASE_PATH}VRA_{ano}{mes_int}.csv"
 
-print(f"\nURL a buscar: {VRA_URL}")
+print(f"URL alvo: {VRA_URL}")
 
-# ── Mapeamento de colunas (formato real do VRA) ───────────────────────────────
-
+# Mapeamento de colunas do CSV do VRA
+# ATUALIZADO (2026-08): a ANAC reestruturou o layout do arquivo. Nomes antigos
+# mantidos na lista por segurança/compatibilidade, mas os novos (confirmados
+# no arquivo de 2026-07) vêm primeiro.
 COLS = {
-    # A ordem importa: o primeiro nome encontrado no CSV é usado
-    "empresa":      ["ICAO Empresa Aérea",    "Empresa (Sigla)"],
-    "voo":          ["Número Voo",             "Número do Voo",    "Numero Voo"],
-    "origem":       ["ICAO Aeródromo Origem",  "Aeroporto Origem"],
-    "destino":      ["ICAO Aeródromo Destino", "Aeroporto Destino"],
-    "partida_prev": ["Partida Prevista"],
-    "partida_real": ["Partida Real"],
-    "chegada_prev": ["Chegada Prevista"],
-    "chegada_real": ["Chegada Real"],
-    "situacao":     ["Situação Voo",           "Situacao Voo"],
-    "motivo":       ["Código Justificativa",   "Justificativa",    "Motivo Alteracao"],
+    "empresa":       ["ICAO Empresa Aérea", "EMPRESA (SIGLA)", "Empresa (Sigla)", "sg_empresa_icao"],
+    "voo":           ["Número Voo", "NÚMERO VOO", "Numero Voo", "nr_voo"],
+    "origem":        ["ICAO Aeródromo Origem", "ORIGEM", "Aeroporto Origem", "sg_icao_origem"],
+    "destino":       ["ICAO Aeródromo Destino", "DESTINO", "Aeroporto Destino", "sg_icao_destino"],
+    "partida_prev":  ["Partida Prevista", "PARTIDA PREVISTA", "dt_partida_prevista"],
+    "partida_real":  ["Partida Real", "PARTIDA REAL", "dt_partida_real"],
+    "chegada_prev":  ["Chegada Prevista", "CHEGADA PREVISTA", "dt_chegada_prevista"],
+    "chegada_real":  ["Chegada Real", "CHEGADA REAL", "dt_chegada_real"],
+    "situacao":      ["Situação Voo", "SITUAÇÃO DE VOO", "Situacao Voo", "situacao"],
+    "motivo":        ["Código Justificativa", "MOTIVO", "Motivo Alteracao", "motivo_alteracao"],
+    # "dt_ref" removido: essa coluna não existe mais no layout novo.
+    # A data de referência agora é derivada da data de "Partida Prevista".
 }
-
-# Palavras-chave para identificar a linha de cabeçalho real
-CABECALHO_KEYWORDS = ["ICAO", "Empresa", "Número", "Numero", "Origem", "Destino"]
 
 
 def get_col(row: dict, key: str) -> str:
-    """Busca o valor de uma coluna tentando múltiplos nomes possíveis."""
+    """Tenta múltiplos nomes de coluna para compatibilidade entre versões do CSV."""
     for nome in COLS.get(key, [key]):
         if nome in row:
-            val = (row[nome] or "").strip()
-            return "" if val.lower() == "null" else val
+            return (row[nome] or "").strip()
     return ""
 
 
-def parse_dt_vra(dt_str: str) -> str | None:
-    """
-    Converte datas do VRA para ISO UTC. O arquivo usa dois formatos:
-      - Prevista: "2026-05-29 01:00:00.100000000"  (ISO com nanossegundos)
-      - Real:     "29/05/2026 00:50"               (DD/MM/YYYY HH:MM)
-    """
-    if not dt_str or dt_str.lower() == "null":
+def parse_dt_anac(dt_str: str) -> str | None:
+    """Converte 'DD/MM/YYYY HH:MM' para ISO UTC."""
+    if not dt_str or len(dt_str) < 16:
         return None
-    # Remove nanossegundos se presentes: "2026-05-29 01:00:00.100000000"
-    dt_str = dt_str.strip().split(".")[0]  # "2026-05-29 01:00:00"
-    for fmt in (
-        "%Y-%m-%d %H:%M:%S",   # ISO sem nanossegundos
-        "%d/%m/%Y %H:%M",      # formato real
-        "%d/%m/%Y %H:%M:%S",
-        "%Y-%m-%d",
-        "%d/%m/%Y",
-    ):
+    for fmt in ("%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M:%S"):
         try:
-            dt = datetime.strptime(dt_str, fmt)
+            dt = datetime.strptime(dt_str.strip(), fmt)
             return dt.replace(tzinfo=timezone.utc).isoformat()
         except ValueError:
             continue
     return None
 
 
-def extrair_data(dt_str: str) -> str | None:
-    """Extrai apenas YYYY-MM-DD de uma string de data/hora."""
-    iso = parse_dt_vra(dt_str)
-    if iso:
-        return iso[:10]
-    return None
-
-
-def diff_minutos(prev: str, real: str) -> int | None:
-    """Calcula atraso em minutos entre previsto e real."""
-    if not prev or not real or real.lower() == "null":
-        return None
-    dt_prev = parse_dt_vra(prev)
-    dt_real = parse_dt_vra(real)
-    if not dt_prev or not dt_real:
-        return None
+def diff_minutos(partida_prev: str, partida_real: str) -> int | None:
+    """Calcula atraso em minutos entre horário previsto e real."""
     try:
-        dp = datetime.fromisoformat(dt_prev)
-        dr = datetime.fromisoformat(dt_real)
+        fmt = "%d/%m/%Y %H:%M"
+        dp  = datetime.strptime(partida_prev.strip(), fmt)
+        dr  = datetime.strptime(partida_real.strip(), fmt)
         return int((dr - dp).total_seconds() / 60)
     except Exception:
         return None
 
 
-# ── Busca e parseia o arquivo VRA ─────────────────────────────────────────────
+def registrar_execucao(
+    periodo: str,
+    aeroportos: list,
+    voos_processados: int,
+    lotes_enviados: int,
+    erros: int,
+    status: str,
+    obs: str = "",
+) -> None:
+    """Grava o log de execução na tabela execucoes (mesmo formato usado pelo
+    pipeline SIROS), para que o histórico apareça na aba Pipeline do painel."""
+    try:
+        db.table("execucoes").insert({
+            "concluido_em":        datetime.now(timezone.utc).isoformat(),
+            "aeroportos_buscados": aeroportos,
+            "voos_processados":    voos_processados,
+            "lotes_enviados":      lotes_enviados,
+            "erros":               erros,
+            "status":              status,
+            "observacao":          obs or f"[historico_vra] período {periodo}",
+        }).execute()
+        print(f"\n  Log de execução salvo — status: {status}")
+    except Exception as e:
+        print(f"  [AVISO] Não foi possível salvar o log de execução: {e}")
+
+
+# ── Busca o arquivo VRA ───────────────────────────────────────────────────────
 
 def baixar_vra() -> list[dict]:
-    print(f"GET {VRA_URL}")
+    print(f"\nGET {VRA_URL}")
     try:
         r = requests.get(VRA_URL, timeout=120)
         if r.status_code == 404:
-            print(f"  Não encontrado (404) — {arquivo} ainda não publicado.")
+            print("  [AVISO] Arquivo não encontrado (404) — pode não ter sido "
+                  "publicado ainda, ou o nome do arquivo/pasta mudou de novo.")
             return []
         r.raise_for_status()
+        # CORREÇÃO (2026-08): o arquivo VRA passou a ser publicado em UTF-8
+        # (o formato antigo era latin-1). Usar utf-8-sig remove o BOM se presente.
+        texto = r.content.decode("utf-8-sig", errors="replace")
 
-        # Decodificação: tenta utf-8-sig (BOM), utf-8, latin-1
-        for enc in ("utf-8-sig", "utf-8", "latin-1"):
-            try:
-                texto = r.content.decode(enc)
-                break
-            except UnicodeDecodeError:
-                continue
-        else:
-            texto = r.content.decode("latin-1", errors="replace")
+        linhas_texto = texto.split("\n")
 
-        linhas = texto.splitlines()
-        print(f"  Total de linhas no arquivo: {len(linhas)}")
+        # A ANAC passou a incluir uma linha de metadado
+        # ("Atualizado em: AAAA-MM-DD") ANTES do cabeçalho real do CSV.
+        if linhas_texto and (
+            "atualizado em" in linhas_texto[0].lower()
+            or linhas_texto[0].count(";") == 0
+        ):
+            print(f"  Descartando linha de metadado inicial: {linhas_texto[0]!r}")
+            linhas_texto = linhas_texto[1:]
 
-        # Localiza a linha de cabeçalho real (pula metadados do topo)
-        inicio = 0
-        for i, linha in enumerate(linhas):
-            if any(kw in linha for kw in CABECALHO_KEYWORDS):
-                print(f"  Cabeçalho encontrado na linha {i + 1}: {linha.strip()[:80]}")
-                inicio = i
-                break
+        texto_limpo = "\n".join(linhas_texto)
 
-        # Detecta o separador na linha de cabeçalho
-        cab = linhas[inicio]
-        if cab.count("\t") >= cab.count(";"):
-            sep = "\t"
-            print("  Separador detectado: TAB")
-        else:
-            sep = ";"
-            print("  Separador detectado: ponto-e-vírgula")
-
-        # Parseia o CSV a partir do cabeçalho real
-        texto_csv = "\n".join(linhas[inicio:])
-        reader    = csv.DictReader(io.StringIO(texto_csv), delimiter=sep)
+        # Detecta o delimitador automaticamente (';' era o padrão antigo,
+        # mas a reestruturação do portal pode ter mudado para ',')
+        primeira_linha = texto_limpo.split("\n", 1)[0]
+        delimitador = ";" if primeira_linha.count(";") >= primeira_linha.count(",") else ","
+        reader = csv.DictReader(io.StringIO(texto_limpo), delimiter=delimitador)
         registros = list(reader)
-
-        print(f"  Registros carregados: {len(registros)}")
+        print(f"  VRA carregado: {len(registros)} linhas brutas (delimitador='{delimitador}')")
         if registros:
-            cols = list(registros[0].keys())
-            print(f"  Colunas detectadas ({len(cols)}): {cols[:6]} ...")
-
+            print(f"  Colunas encontradas no CSV: {list(registros[0].keys())}")
         return registros
-
     except Exception as e:
         print(f"  [ERRO] {e}")
         return []
 
 
-# ── Filtra e normaliza ────────────────────────────────────────────────────────
+# ── Processa e filtra registros ───────────────────────────────────────────────
 
 def processar_vra(linhas: list[dict]) -> list[dict]:
     resultado = []
-    sem_icao  = 0
-
     for row in linhas:
         origem  = get_col(row, "origem").upper()
         destino = get_col(row, "destino").upper()
-
-        if not origem and not destino:
-            sem_icao += 1
-            continue
-
         if origem not in AIRPORTS and destino not in AIRPORTS:
             continue
 
-        empresa   = get_col(row, "empresa")
-        nr_voo    = get_col(row, "voo")
-        part_prev = get_col(row, "partida_prev")
-        part_real = get_col(row, "partida_real")
-        cheg_prev = get_col(row, "chegada_prev")
-        cheg_real = get_col(row, "chegada_real")
-        situacao  = get_col(row, "situacao")
-        motivo    = get_col(row, "motivo")
-        dt_ref    = extrair_data(part_prev or part_real)
+        empresa       = get_col(row, "empresa")
+        nr_voo        = get_col(row, "voo")
+        partida_prev  = get_col(row, "partida_prev")
+        partida_real  = get_col(row, "partida_real")
+        chegada_prev  = get_col(row, "chegada_prev")
+        chegada_real  = get_col(row, "chegada_real")
+        situacao      = get_col(row, "situacao")
+        motivo        = get_col(row, "motivo")
+
+        # Data de referência: derivada da data de "Partida Prevista"
+        # (a coluna dedicada DT_REFERENCIA não existe mais no layout novo)
+        dt_ref = None
+        if partida_prev:
+            try:
+                for fmt in ("%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M:%S"):
+                    try:
+                        dt_ref = datetime.strptime(partida_prev.strip(), fmt).date().isoformat()
+                        break
+                    except ValueError:
+                        continue
+            except Exception:
+                pass
 
         resultado.append({
             "ano_mes":          ano_mes,
-            "icao_empresa":     empresa  or None,
-            "nr_voo":           nr_voo   or None,
-            "icao_origem":      origem   or None,
-            "icao_destino":     destino  or None,
+            "icao_empresa":     empresa or None,
+            "nr_voo":           nr_voo or None,
+            "icao_origem":      origem or None,
+            "icao_destino":     destino or None,
             "dt_referencia":    dt_ref,
-            "partida_real":     parse_dt_vra(part_real),
-            "chegada_real":     parse_dt_vra(cheg_real),
-            "atraso_partida":   diff_minutos(part_prev, part_real),
-            "atraso_chegada":   diff_minutos(cheg_prev, cheg_real),
-            "situacao":         situacao.upper() if situacao else None,
+            "partida_real":     parse_dt_anac(partida_real),
+            "chegada_real":     parse_dt_anac(chegada_real),
+            "atraso_partida":   diff_minutos(partida_prev, partida_real),
+            "atraso_chegada":   diff_minutos(chegada_prev, chegada_real),
+            "situacao":         situacao.lower() if situacao else None,
             "motivo_alteracao": motivo or None,
         })
 
-    if sem_icao:
-        print(f"  Aviso: {sem_icao} linha(s) sem ICAO reconhecível — ignoradas")
     print(f"  Registros filtrados para os aeroportos configurados: {len(resultado)}")
     return resultado
 
 
-# ── Inserção no Supabase ──────────────────────────────────────────────────────
+# ── Execução principal ─────────────────────────────────────────────────────────
 
 linhas_vra = baixar_vra()
 
 if not linhas_vra:
-    print("\n[AVISO] VRA não disponível. Encerrando.")
+    print("\n[AVISO] VRA não disponível para o período. Encerrando.")
+    registrar_execucao(ano_mes, AIRPORTS, 0, 0, 0, "sem_dados",
+                        "Arquivo VRA não encontrado ou vazio para o período.")
     sys.exit(0)
 
 registros   = processar_vra(linhas_vra)
-processados = 0
-erros       = 0
 
 if not registros:
-    print("\n[AVISO] Nenhum registro filtrado. Encerrando.")
+    print("\n[AVISO] Nenhum registro bateu com os aeroportos configurados. "
+          "Isso pode indicar que os nomes das colunas do CSV mudaram — "
+          "confira a lista de 'Colunas encontradas' impressa acima.")
+    registrar_execucao(ano_mes, AIRPORTS, 0, 0, 0, "sem_dados",
+                        "0 registros após filtro — possível mudança de layout do CSV.")
     sys.exit(0)
 
-# Deduplicação: remove registros com a mesma chave única antes do envio
-# O VRA pode conter linhas duplicadas no arquivo, causando erro PostgreSQL
-# 21000: ON CONFLICT DO UPDATE command cannot affect row a second time
-def deduplicar(lista: list) -> list:
-    seen   = set()
-    result = []
-    for r in lista:
-        key = (
-            r.get("ano_mes"),
-            r.get("icao_empresa"),
-            r.get("nr_voo"),
-            r.get("icao_origem"),
-            r.get("icao_destino"),
-            r.get("dt_referencia"),
-        )
-        if key not in seen:
-            seen.add(key)
-            result.append(r)
-    return result
-
-antes     = len(registros)
-registros = deduplicar(registros)
-removidos = antes - len(registros)
-if removidos:
-    print(f"  Deduplicação: {removidos} registro(s) duplicado(s) removido(s) antes do envio")
-
-print(f"\nEnviando {len(registros)} registros em lotes de {LOTE}...")
+processados = 0
+total_lotes = 0
+erros       = 0
 
 for i in range(0, len(registros), LOTE):
     lote     = registros[i:i + LOTE]
@@ -316,10 +294,25 @@ for i in range(0, len(registros), LOTE):
             on_conflict="ano_mes,icao_empresa,nr_voo,icao_origem,icao_destino,dt_referencia",
         ).execute()
         processados += len(lote)
+        total_lotes += 1
         print(f"  Lote {num_lote}: {len(lote)} registros enviados/processados")
     except Exception as e:
         erros += 1
         print(f"  [ERRO] Lote {num_lote}: {e}")
+
+if erros == 0:
+    status_final = "concluido"
+elif processados > 0:
+    status_final = "erro_parcial"
+else:
+    status_final = "erro_critico"
+
+obs = (
+    f"Período: {ano_mes} | Aeroportos: {', '.join(AIRPORTS)} | "
+    f"Processados: {processados} | Lotes: {total_lotes} | Erros: {erros}"
+)
+
+registrar_execucao(ano_mes, AIRPORTS, processados, total_lotes, erros, status_final, obs)
 
 print(f"\nConcluído — {processados} registros históricos enviados/processados.")
 if erros > 0:
